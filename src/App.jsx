@@ -8,12 +8,12 @@ const CubePatternGenerator = () => {
   const [pixelHeight, setPixelHeight] = useState(30);
   const [useCustomDimensions, setUseCustomDimensions] = useState(false);
   const [colors, setColors] = useState([
-    '#FF0000', // Red
-    '#00FF00', // Green
-    '#0000FF', // Blue
-    '#FFFF00', // Yellow
-    '#FF8000', // Orange
-    '#FFFFFF'  // White
+    '#FFFFFF', // White - 흰색
+    '#000000', // Black - 검정
+    '#FF0000', // Red - 빨강
+    '#0000FF', // Blue - 파랑
+    '#FFFF00', // Yellow - 노랑
+    '#00FF00'  // Green - 초록
   ]);
   const [pixelatedData, setPixelatedData] = useState(null);
   const [zoom, setZoom] = useState(1);
@@ -23,6 +23,10 @@ const CubePatternGenerator = () => {
   const [pipetteColorIndex, setPipetteColorIndex] = useState(null);
   const [showTutorial, setShowTutorial] = useState(true);
   const [showThickGrid, setShowThickGrid] = useState(true);
+  const [colorMode, setColorMode] = useState('auto'); // 'auto' or 'manual'
+  const [mandatorySixColors, setMandatorySixColors] = useState(false);
+  const [hoveredPixel, setHoveredPixel] = useState(null); // { x, y, color }
+  const [selectedPixel, setSelectedPixel] = useState(null); // { x, y, color }
   
   const fileInputRef = useRef(null);
   const canvasRef = useRef(null);
@@ -89,7 +93,7 @@ const CubePatternGenerator = () => {
     );
   };
 
-  // Find closest color
+  // Find closest color using weighted RGB (human eye is more sensitive to green)
   const findClosestColor = (r, g, b, palette) => {
     let minDist = Infinity;
     let closestColor = palette[0];
@@ -99,10 +103,12 @@ const CubePatternGenerator = () => {
       const hexG = parseInt(color.slice(3, 5), 16);
       const hexB = parseInt(color.slice(5, 7), 16);
       
+      // Weighted RGB distance - human eye is more sensitive to green
+      // Standard weights: R=0.3, G=0.59, B=0.11
       const dist = Math.sqrt(
-        Math.pow(r - hexR, 2) +
-        Math.pow(g - hexG, 2) +
-        Math.pow(b - hexB, 2)
+        0.30 * Math.pow(r - hexR, 2) +
+        0.59 * Math.pow(g - hexG, 2) +
+        0.11 * Math.pow(b - hexB, 2)
       );
       
       if (dist < minDist) {
@@ -112,6 +118,135 @@ const CubePatternGenerator = () => {
     });
     
     return closestColor;
+  };
+
+  // Calculate color distance using weighted RGB
+  const calculateColorDistance = (color1, color2) => {
+    const r1 = parseInt(color1.slice(1, 3), 16);
+    const g1 = parseInt(color1.slice(3, 5), 16);
+    const b1 = parseInt(color1.slice(5, 7), 16);
+    
+    const r2 = parseInt(color2.slice(1, 3), 16);
+    const g2 = parseInt(color2.slice(3, 5), 16);
+    const b2 = parseInt(color2.slice(5, 7), 16);
+    
+    return Math.sqrt(
+      0.30 * Math.pow(r1 - r2, 2) +
+      0.59 * Math.pow(g1 - g2, 2) +
+      0.11 * Math.pow(b1 - b2, 2)
+    );
+  };
+
+  // Hungarian Algorithm for optimal color assignment
+  const hungarianAssignment = (costMatrix) => {
+    const n = costMatrix.length;
+    const assignment = new Array(n).fill(-1);
+    const rowCovered = new Array(n).fill(false);
+    const colCovered = new Array(n).fill(false);
+    
+    // Step 1: Subtract row minimums
+    const matrix = costMatrix.map(row => {
+      const min = Math.min(...row);
+      return row.map(val => val - min);
+    });
+    
+    // Step 2: Subtract column minimums
+    for (let col = 0; col < n; col++) {
+      let min = Infinity;
+      for (let row = 0; row < n; row++) {
+        min = Math.min(min, matrix[row][col]);
+      }
+      for (let row = 0; row < n; row++) {
+        matrix[row][col] -= min;
+      }
+    }
+    
+    // Step 3: Greedy assignment (simplified for 6x6)
+    const used = new Array(n).fill(false);
+    for (let row = 0; row < n; row++) {
+      for (let col = 0; col < n; col++) {
+        if (matrix[row][col] === 0 && !used[col]) {
+          assignment[row] = col;
+          used[col] = true;
+          break;
+        }
+      }
+    }
+    
+    // Fill any unassigned with remaining colors
+    for (let row = 0; row < n; row++) {
+      if (assignment[row] === -1) {
+        for (let col = 0; col < n; col++) {
+          if (!used[col]) {
+            assignment[row] = col;
+            used[col] = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    return assignment;
+  };
+
+  // Extract 6 regions using K-means and assign user colors optimally
+  const extractRegionsAndAssignColors = (imageData, userColors) => {
+    // Extract 6 dominant regions using K-means
+    const regionColors = extractDominantColors(imageData, 6);
+    
+    // Count pixels in each region
+    const regionSizes = new Array(6).fill(0);
+    const cols = imageData.width;
+    const rows = imageData.height;
+    
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const i = (y * cols + x) * 4;
+        const r = imageData.data[i];
+        const g = imageData.data[i + 1];
+        const b = imageData.data[i + 2];
+        
+        // Find which region this pixel belongs to
+        let minDist = Infinity;
+        let regionIndex = 0;
+        regionColors.forEach((color, idx) => {
+          const hexR = parseInt(color.slice(1, 3), 16);
+          const hexG = parseInt(color.slice(3, 5), 16);
+          const hexB = parseInt(color.slice(5, 7), 16);
+          const dist = calculateColorDistance(
+            `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`,
+            color
+          );
+          if (dist < minDist) {
+            minDist = dist;
+            regionIndex = idx;
+          }
+        });
+        regionSizes[regionIndex]++;
+      }
+    }
+    
+    // Sort regions by size (largest first)
+    const regionIndices = regionColors.map((_, i) => i);
+    regionIndices.sort((a, b) => regionSizes[b] - regionSizes[a]);
+    
+    // Create cost matrix: distance between each region color and user color
+    const costMatrix = regionIndices.map(regionIdx => 
+      userColors.map(userColor => 
+        calculateColorDistance(regionColors[regionIdx], userColor)
+      )
+    );
+    
+    // Use Hungarian algorithm to find optimal assignment
+    const assignment = hungarianAssignment(costMatrix);
+    
+    // Create mapping: region color -> user color
+    const colorMapping = {};
+    regionIndices.forEach((regionIdx, i) => {
+      colorMapping[regionColors[regionIdx]] = userColors[assignment[i]];
+    });
+    
+    return { regionColors, colorMapping };
   };
 
   // Process image into pixelated version
@@ -143,9 +278,26 @@ const CubePatternGenerator = () => {
       ctx.drawImage(img, 0, 0, cols, rows);
       const imageData = ctx.getImageData(0, 0, cols, rows);
       
-      // Extract colors if using default palette
-      const detectedColors = extractDominantColors(imageData, 6);
-      setColors(detectedColors);
+      // Handle color extraction based on mode
+      let activeColors;
+      let colorMapping = null;
+      
+      if (colorMode === 'auto') {
+        const detectedColors = extractDominantColors(imageData, 6);
+        setColors(detectedColors);
+        activeColors = detectedColors;
+      } else {
+        // Manual mode
+        if (mandatorySixColors) {
+          // Use Hungarian algorithm for optimal 6-color assignment
+          const result = extractRegionsAndAssignColors(imageData, colors);
+          colorMapping = result.colorMapping;
+          activeColors = result.regionColors;
+        } else {
+          // Use current user-selected colors
+          activeColors = colors;
+        }
+      }
       
       // Create pixel art
       const pixelData = [];
@@ -156,7 +308,18 @@ const CubePatternGenerator = () => {
           const r = imageData.data[i];
           const g = imageData.data[i + 1];
           const b = imageData.data[i + 2];
-          const color = findClosestColor(r, g, b, detectedColors);
+          
+          let color;
+          if (mandatorySixColors && colorMapping) {
+            // Find which region this pixel belongs to
+            const closestRegion = findClosestColor(r, g, b, activeColors);
+            // Map to user color
+            color = colorMapping[closestRegion];
+          } else {
+            // Normal closest color matching
+            color = findClosestColor(r, g, b, activeColors);
+          }
+          
           row.push(color);
         }
         pixelData.push(row);
@@ -195,6 +358,20 @@ const CubePatternGenerator = () => {
       ctx.drawImage(img, 0, 0, cols, rows);
       const imageData = ctx.getImageData(0, 0, cols, rows);
       
+      // Handle color mode
+      let activeColors;
+      let colorMapping = null;
+      
+      if (colorMode === 'manual' && mandatorySixColors) {
+        // Use Hungarian algorithm for optimal 6-color assignment
+        const result = extractRegionsAndAssignColors(imageData, colors);
+        colorMapping = result.colorMapping;
+        activeColors = result.regionColors;
+      } else {
+        // Use current colors
+        activeColors = colors;
+      }
+      
       const pixelData = [];
       for (let y = 0; y < rows; y++) {
         const row = [];
@@ -203,7 +380,18 @@ const CubePatternGenerator = () => {
           const r = imageData.data[i];
           const g = imageData.data[i + 1];
           const b = imageData.data[i + 2];
-          const color = findClosestColor(r, g, b, colors);
+          
+          let color;
+          if (mandatorySixColors && colorMapping) {
+            // Find which region this pixel belongs to
+            const closestRegion = findClosestColor(r, g, b, activeColors);
+            // Map to user color
+            color = colorMapping[closestRegion];
+          } else {
+            // Normal closest color matching
+            color = findClosestColor(r, g, b, activeColors);
+          }
+          
           row.push(color);
         }
         pixelData.push(row);
@@ -281,7 +469,7 @@ const CubePatternGenerator = () => {
     if (uploadedImage) {
       processImage();
     }
-  }, [uploadedImage, pixelSize, pixelWidth, pixelHeight, useCustomDimensions]);
+  }, [uploadedImage, pixelSize, pixelWidth, pixelHeight, useCustomDimensions, colorMode, mandatorySixColors]);
 
   // Reprocess when colors change
   useEffect(() => {
@@ -289,6 +477,13 @@ const CubePatternGenerator = () => {
       reprocessWithCurrentColors();
     }
   }, [colors]);
+
+  // Reprocess when mandatory mode changes
+  useEffect(() => {
+    if (uploadedImage && colorMode === 'manual' && mandatorySixColors) {
+      processImage();
+    }
+  }, [mandatorySixColors]);
 
   // Download image
   const downloadImage = () => {
@@ -302,39 +497,96 @@ const CubePatternGenerator = () => {
 
   // Handle canvas click for pipette
   const handleCanvasClick = (e) => {
-    if (!isPipetteMode || pipetteColorIndex === null) return;
-    
     const canvas = outputCanvasRef.current;
+    if (!canvas || !pixelatedData) return;
+    
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const x = Math.floor((e.clientX - rect.left) * scaleX);
     const y = Math.floor((e.clientY - rect.top) * scaleY);
     
-    const ctx = canvas.getContext('2d');
-    const pixel = ctx.getImageData(x, y, 1, 1).data;
-    const pickedColor = `#${[pixel[0], pixel[1], pixel[2]].map(v => 
-      v.toString(16).padStart(2, '0')).join('')}`;
+    const cellSize = 20;
+    const pixelX = Math.floor(x / cellSize);
+    const pixelY = Math.floor(y / cellSize);
     
-    const newColors = [...colors];
-    newColors[pipetteColorIndex] = pickedColor;
-    setColors(newColors);
-    setPipetteMode(false);
-    setPipetteColorIndex(null);
+    // Check if in bounds
+    if (pixelY >= 0 && pixelY < pixelatedData.length && 
+        pixelX >= 0 && pixelX < pixelatedData[0].length) {
+      
+      // Pipette mode - change color
+      if (isPipetteMode && pipetteColorIndex !== null) {
+        const ctx = canvas.getContext('2d');
+        const pixel = ctx.getImageData(x, y, 1, 1).data;
+        const pickedColor = `#${[pixel[0], pixel[1], pixel[2]].map(v => 
+          v.toString(16).padStart(2, '0')).join('')}`;
+        
+        const newColors = [...colors];
+        newColors[pipetteColorIndex] = pickedColor;
+        setColors(newColors);
+        setPipetteMode(false);
+        setPipetteColorIndex(null);
+      } else {
+        // Select pixel
+        const color = pixelatedData[pixelY][pixelX];
+        setSelectedPixel({ x: pixelX, y: pixelY, color });
+      }
+    }
+  };
+
+  // Handle canvas hover for pixel info
+  const handleCanvasHover = (e) => {
+    const canvas = outputCanvasRef.current;
+    if (!canvas || !pixelatedData) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = Math.floor((e.clientX - rect.left) * scaleX);
+    const y = Math.floor((e.clientY - rect.top) * scaleY);
+    
+    const cellSize = 20;
+    const pixelX = Math.floor(x / cellSize);
+    const pixelY = Math.floor(y / cellSize);
+    
+    // Check if in bounds
+    if (pixelY >= 0 && pixelY < pixelatedData.length && 
+        pixelX >= 0 && pixelX < pixelatedData[0].length) {
+      const color = pixelatedData[pixelY][pixelX];
+      setHoveredPixel({ x: pixelX, y: pixelY, color });
+    } else {
+      setHoveredPixel(null);
+    }
+  };
+
+  // Handle canvas mouse leave
+  const handleCanvasLeave = () => {
+    setHoveredPixel(null);
+  };
+
+  // Change selected pixel color
+  const changePixelColor = (newColor) => {
+    if (!selectedPixel || !pixelatedData) return;
+    
+    const newPixelData = pixelatedData.map((row, y) =>
+      row.map((color, x) =>
+        x === selectedPixel.x && y === selectedPixel.y ? newColor : color
+      )
+    );
+    
+    setPixelatedData(newPixelData);
+    setSelectedPixel({ ...selectedPixel, color: newColor });
   };
 
   return (
     <div style={{ 
       minHeight: '100vh',
-      width: '100%',
       padding: '20px', 
       fontFamily: 'Arial, sans-serif',
-      backgroundColor: '#f0f4f8',
-      display: 'flex',
-      justifyContent: 'center'
+      backgroundColor: '#f0f4f8'
     }}>
       <div style={{
-        maxWidth: '1500px',
+        maxWidth: '1200px',
         margin: '0 auto'
       }}>
       {/* Header */}
@@ -661,6 +913,299 @@ const CubePatternGenerator = () => {
         </div>
       )}
 
+      {/* Color Mode Selection - Before Image Upload */}
+      <div style={{
+        marginBottom: '20px',
+        padding: '25px',
+        backgroundColor: 'white',
+        borderRadius: '15px',
+        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+        marginLeft: 'auto',
+        marginRight: 'auto'
+      }}>
+        <h2 style={{
+          color: '#2c3e50',
+          marginBottom: '20px',
+          fontSize: '20px',
+          textAlign: 'center',
+          borderBottom: '2px solid #9b59b6',
+          paddingBottom: '10px'
+        }}>
+          🎨 1️⃣ 색상 모드 선택
+        </h2>
+
+        {/* Mode Toggle Buttons */}
+        <div style={{
+          display: 'flex',
+          gap: '15px',
+          marginBottom: '25px',
+          justifyContent: 'center',
+          flexWrap: 'wrap'
+        }}>
+          <button
+            onClick={() => setColorMode('auto')}
+            style={{
+              padding: '15px 40px',
+              backgroundColor: colorMode === 'auto' ? '#3498db' : '#ecf0f1',
+              color: colorMode === 'auto' ? 'white' : '#7f8c8d',
+              border: colorMode === 'auto' ? '3px solid #2980b9' : '2px solid #bdc3c7',
+              borderRadius: '10px',
+              cursor: 'pointer',
+              fontSize: '16px',
+              fontWeight: 'bold',
+              transition: 'all 0.3s',
+              boxShadow: colorMode === 'auto' ? '0 4px 8px rgba(0,0,0,0.2)' : 'none'
+            }}
+          >
+            🤖 자동 색상 추출
+          </button>
+          <button
+            onClick={() => setColorMode('manual')}
+            style={{
+              padding: '15px 40px',
+              backgroundColor: colorMode === 'manual' ? '#e67e22' : '#ecf0f1',
+              color: colorMode === 'manual' ? 'white' : '#7f8c8d',
+              border: colorMode === 'manual' ? '3px solid #d35400' : '2px solid #bdc3c7',
+              borderRadius: '10px',
+              cursor: 'pointer',
+              fontSize: '16px',
+              fontWeight: 'bold',
+              transition: 'all 0.3s',
+              boxShadow: colorMode === 'manual' ? '0 4px 8px rgba(0,0,0,0.2)' : 'none'
+            }}
+          >
+            ✋ 수동 색상 선택
+          </button>
+        </div>
+
+        {/* Mode Description */}
+        <div style={{
+          padding: '15px',
+          backgroundColor: colorMode === 'auto' ? '#e3f2fd' : '#fff3e0',
+          borderRadius: '8px',
+          marginBottom: '20px',
+          border: `2px solid ${colorMode === 'auto' ? '#2196F3' : '#ff9800'}`
+        }}>
+          <p style={{ 
+            margin: 0, 
+            color: '#2c3e50', 
+            fontSize: '14px',
+            lineHeight: '1.6',
+            textAlign: 'center'
+          }}>
+            {colorMode === 'auto' ? (
+              <>
+                <strong>🤖 자동 모드:</strong> 이미지 업로드 시 자동으로 6가지 대표 색상을 추출합니다.
+              </>
+            ) : (
+              <>
+                <strong>✋ 수동 모드:</strong> 아래에서 원하는 6가지 색상을 먼저 선택하세요. 이미지는 선택한 색상으로만 변환됩니다!
+              </>
+            )}
+          </p>
+        </div>
+
+        {/* Manual Color Picker - 2 rows x 3 columns */}
+        {colorMode === 'manual' && (
+          <div style={{
+            padding: '20px',
+            backgroundColor: '#fef5e7',
+            borderRadius: '10px',
+            border: '3px solid #f39c12'
+          }}>
+            <h3 style={{
+              textAlign: 'center',
+              color: '#2c3e50',
+              marginBottom: '20px',
+              fontSize: '18px'
+            }}>
+              🎨 6가지 색상 선택 (큐브 기본 색상)
+            </h3>
+
+            {/* Mandatory 6-Color Checkbox */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              padding: '15px',
+              backgroundColor: mandatorySixColors ? '#d4edda' : '#fff3cd',
+              borderRadius: '8px',
+              marginBottom: '20px',
+              border: `3px solid ${mandatorySixColors ? '#28a745' : '#ffc107'}`
+            }}>
+              <input
+                type="checkbox"
+                id="mandatorySixColors"
+                checked={mandatorySixColors}
+                onChange={(e) => setMandatorySixColors(e.target.checked)}
+                style={{
+                  width: '24px',
+                  height: '24px',
+                  cursor: 'pointer'
+                }}
+              />
+              <label 
+                htmlFor="mandatorySixColors" 
+                style={{ 
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  color: '#2c3e50',
+                  fontSize: '16px'
+                }}
+              >
+                ✅ 6색 필수 사용
+              </label>
+            </div>
+
+            {/* Description for mandatory mode */}
+            {mandatorySixColors && (
+              <div style={{
+                padding: '12px',
+                backgroundColor: '#d1ecf1',
+                borderRadius: '8px',
+                marginBottom: '20px',
+                border: '2px solid #17a2b8'
+              }}>
+                <p style={{
+                  margin: 0,
+                  color: '#004085',
+                  fontSize: '13px',
+                  lineHeight: '1.6',
+                  textAlign: 'center'
+                }}>
+                  <strong>🎯 6색 필수 모드:</strong> 이미지를 6개 영역으로 분석하고, 
+                  각 영역에 선택한 6가지 색상을 최적으로 배정합니다. 
+                  모든 색상이 정확히 한 번씩 사용됩니다!
+                </p>
+              </div>
+            )}
+            
+            {/* Row 1: Colors 1-3 */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '20px',
+              marginBottom: '20px'
+            }}>
+              {colors.slice(0, 3).map((color, index) => (
+                <div key={index} style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '15px',
+                  backgroundColor: 'white',
+                  borderRadius: '10px',
+                  border: '2px solid #e67e22'
+                }}>
+                  <label style={{
+                    fontWeight: 'bold',
+                    color: '#2c3e50',
+                    fontSize: '14px'
+                  }}>
+                    색상 {index + 1}
+                  </label>
+                  <div style={{
+                    width: '80px',
+                    height: '80px',
+                    backgroundColor: color,
+                    border: '3px solid #333',
+                    borderRadius: '10px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                  }} />
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => {
+                      const newColors = [...colors];
+                      newColors[index] = e.target.value;
+                      setColors(newColors);
+                    }}
+                    style={{
+                      width: '80px',
+                      height: '40px',
+                      border: '2px solid #333',
+                      borderRadius: '5px',
+                      cursor: 'pointer'
+                    }}
+                  />
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 'bold',
+                    color: '#7f8c8d',
+                    fontFamily: 'monospace'
+                  }}>
+                    {color.toUpperCase()}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Row 2: Colors 4-6 */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '20px'
+            }}>
+              {colors.slice(3, 6).map((color, index) => (
+                <div key={index + 3} style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '15px',
+                  backgroundColor: 'white',
+                  borderRadius: '10px',
+                  border: '2px solid #e67e22'
+                }}>
+                  <label style={{
+                    fontWeight: 'bold',
+                    color: '#2c3e50',
+                    fontSize: '14px'
+                  }}>
+                    색상 {index + 4}
+                  </label>
+                  <div style={{
+                    width: '80px',
+                    height: '80px',
+                    backgroundColor: color,
+                    border: '3px solid #333',
+                    borderRadius: '10px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                  }} />
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => {
+                      const newColors = [...colors];
+                      newColors[index + 3] = e.target.value;
+                      setColors(newColors);
+                    }}
+                    style={{
+                      width: '80px',
+                      height: '40px',
+                      border: '2px solid #333',
+                      borderRadius: '5px',
+                      cursor: 'pointer'
+                    }}
+                  />
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 'bold',
+                    color: '#7f8c8d',
+                    fontFamily: 'monospace'
+                  }}>
+                    {color.toUpperCase()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Controls */}
       <div style={{ 
         marginBottom: '20px',
@@ -679,7 +1224,7 @@ const CubePatternGenerator = () => {
           borderBottom: '2px solid #3498db',
           paddingBottom: '10px'
         }}>
-          ⚙️ 도안 설정
+          ⚙️ 2️⃣ 도안 설정
         </h2>
         
         <div style={{
@@ -705,7 +1250,7 @@ const CubePatternGenerator = () => {
               color: '#2c3e50',
               fontSize: '14px'
             }}>
-              1️⃣ 이미지 선택
+              이미지 업로드
             </label>
             <button
               onClick={() => fileInputRef.current.click()}
@@ -723,16 +1268,6 @@ const CubePatternGenerator = () => {
                 fontWeight: 'bold',
                 boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
                 transition: 'all 0.3s'
-              }}
-              onMouseOver={(e) => {
-                e.target.style.backgroundColor = '#45a049';
-                e.target.style.transform = 'translateY(-2px)';
-                e.target.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
-              }}
-              onMouseOut={(e) => {
-                e.target.style.backgroundColor = '#4CAF50';
-                e.target.style.transform = 'translateY(0)';
-                e.target.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
               }}
             >
               <Upload size={20} />
@@ -771,7 +1306,7 @@ const CubePatternGenerator = () => {
               color: '#2c3e50',
               fontSize: '14px'
             }}>
-              2️⃣ 픽셀 크기 조절
+              픽셀 크기 조절
             </label>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <button
@@ -846,7 +1381,7 @@ const CubePatternGenerator = () => {
               color: '#2c3e50',
               fontSize: '14px'
             }}>
-              3️⃣ 정확한 크기 입력
+              픽셀 갯수 조절
             </label>
             
             <div style={{ 
@@ -1029,7 +1564,7 @@ const CubePatternGenerator = () => {
                   color: '#2c3e50',
                   fontSize: '14px'
                 }}>
-                  4️⃣ 확대/축소
+                  확대/축소
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <button
@@ -1107,7 +1642,7 @@ const CubePatternGenerator = () => {
                   color: '#2c3e50',
                   fontSize: '14px'
                 }}>
-                  5️⃣ 저장하기
+                  저장하기
                 </label>
                 <button
                   onClick={downloadImage}
@@ -1125,16 +1660,6 @@ const CubePatternGenerator = () => {
                     fontWeight: 'bold',
                     boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
                     transition: 'all 0.3s'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.backgroundColor = '#7B1FA2';
-                    e.target.style.transform = 'translateY(-2px)';
-                    e.target.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.backgroundColor = '#9C27B0';
-                    e.target.style.transform = 'translateY(0)';
-                    e.target.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
                   }}
                   title="PNG 파일로 다운로드"
                 >
@@ -1257,22 +1782,77 @@ const CubePatternGenerator = () => {
               </div>
             )}
           </div>
+
+          {/* Color Mode Toggle */}
+          <div style={{
+            display: 'flex',
+            gap: '10px',
+            marginBottom: '20px',
+            justifyContent: 'center',
+            padding: '15px',
+            backgroundColor: '#f8f9fa',
+            borderRadius: '10px'
+          }}>
+            <button
+              onClick={() => setColorMode('auto')}
+              style={{
+                padding: '12px 30px',
+                backgroundColor: colorMode === 'auto' ? '#3498db' : '#ecf0f1',
+                color: colorMode === 'auto' ? 'white' : '#7f8c8d',
+                border: colorMode === 'auto' ? '3px solid #2980b9' : '2px solid #bdc3c7',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '15px',
+                fontWeight: 'bold',
+                transition: 'all 0.3s',
+                boxShadow: colorMode === 'auto' ? '0 4px 8px rgba(0,0,0,0.2)' : 'none'
+              }}
+            >
+              🤖 자동 색상 추출
+            </button>
+            <button
+              onClick={() => setColorMode('manual')}
+              style={{
+                padding: '12px 30px',
+                backgroundColor: colorMode === 'manual' ? '#e67e22' : '#ecf0f1',
+                color: colorMode === 'manual' ? 'white' : '#7f8c8d',
+                border: colorMode === 'manual' ? '3px solid #d35400' : '2px solid #bdc3c7',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '15px',
+                fontWeight: 'bold',
+                transition: 'all 0.3s',
+                boxShadow: colorMode === 'manual' ? '0 4px 8px rgba(0,0,0,0.2)' : 'none'
+              }}
+            >
+              ✋ 수동 색상 선택
+            </button>
+          </div>
           
           <div style={{
             padding: '15px',
-            backgroundColor: '#fff8e1',
+            backgroundColor: colorMode === 'auto' ? '#e3f2fd' : '#fff3e0',
             borderRadius: '8px',
             marginBottom: '20px',
-            border: '2px solid #ffc107'
+            border: `2px solid ${colorMode === 'auto' ? '#2196F3' : '#ff9800'}`
           }}>
             <p style={{ 
               margin: 0, 
-              color: '#7f8c8d', 
+              color: '#2c3e50', 
               fontSize: '14px',
               lineHeight: '1.6'
             }}>
-              💡 <strong>색상 조정 방법:</strong> 색상 박스를 클릭하여 <strong>컬러 피커</strong>로 직접 수정하거나, 
-              <strong>스포이드 버튼</strong>을 누른 후 아래 도안에서 원하는 색상을 클릭하세요!
+              {colorMode === 'auto' ? (
+                <>
+                  <strong>🤖 자동 모드:</strong> 이미지에서 자동으로 6가지 대표 색상을 추출합니다. 
+                  추출된 색상은 <strong>컬러 피커</strong>나 <strong>스포이드</strong>로 수정할 수 있습니다.
+                </>
+              ) : (
+                <>
+                  <strong>✋ 수동 모드:</strong> 아래에서 원하는 6가지 색상을 직접 선택하세요. 
+                  이미지는 선택한 색상만으로 변환됩니다. <strong>이미지 업로드 전에 색상을 미리 설정</strong>할 수 있습니다!
+                </>
+              )}
             </p>
           </div>
           
@@ -1458,14 +2038,232 @@ const CubePatternGenerator = () => {
               <canvas
                 ref={outputCanvasRef}
                 onClick={handleCanvasClick}
+                onMouseMove={handleCanvasHover}
+                onMouseLeave={handleCanvasLeave}
                 style={{
                   border: '4px solid #2c3e50',
                   borderRadius: '8px',
-                  cursor: isPipetteMode ? 'crosshair' : 'default',
+                  cursor: isPipetteMode ? 'crosshair' : 'pointer',
                   imageRendering: 'pixelated',
                   backgroundColor: 'white'
                 }}
               />
+            </div>
+          </div>
+
+          {/* Pixel Info Display */}
+          <div style={{
+            marginTop: '20px',
+            display: 'flex',
+            gap: '20px',
+            justifyContent: 'center',
+            flexWrap: 'wrap'
+          }}>
+            {/* Hovered Pixel Info */}
+            <div style={{
+              padding: '15px 25px',
+              backgroundColor: hoveredPixel ? '#e3f2fd' : '#f5f5f5',
+              borderRadius: '10px',
+              border: `3px solid ${hoveredPixel ? '#2196F3' : '#ccc'}`,
+              minWidth: '250px',
+              transition: 'all 0.3s'
+            }}>
+              <h4 style={{
+                margin: '0 0 10px 0',
+                color: '#2c3e50',
+                fontSize: '14px',
+                textAlign: 'center'
+              }}>
+                🖱️ 호버 중인 픽셀
+              </h4>
+              {hoveredPixel ? (
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ margin: '5px 0', fontSize: '13px', color: '#555' }}>
+                    <strong>좌표:</strong> ({hoveredPixel.x}, {hoveredPixel.y})
+                  </p>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    marginTop: '8px'
+                  }}>
+                    <div style={{
+                      width: '40px',
+                      height: '40px',
+                      backgroundColor: hoveredPixel.color,
+                      border: '2px solid #333',
+                      borderRadius: '5px'
+                    }} />
+                    <span style={{
+                      fontSize: '13px',
+                      fontWeight: 'bold',
+                      fontFamily: 'monospace',
+                      color: '#2c3e50'
+                    }}>
+                      {hoveredPixel.color.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p style={{ 
+                  margin: 0, 
+                  fontSize: '13px', 
+                  color: '#999', 
+                  textAlign: 'center' 
+                }}>
+                  픽셀 위에 마우스를 올려보세요
+                </p>
+              )}
+            </div>
+
+            {/* Selected Pixel Info */}
+            <div style={{
+              padding: '15px 25px',
+              backgroundColor: selectedPixel ? '#fff3e0' : '#f5f5f5',
+              borderRadius: '10px',
+              border: `3px solid ${selectedPixel ? '#ff9800' : '#ccc'}`,
+              minWidth: '300px',
+              transition: 'all 0.3s'
+            }}>
+              <h4 style={{
+                margin: '0 0 10px 0',
+                color: '#2c3e50',
+                fontSize: '14px',
+                textAlign: 'center'
+              }}>
+                👆 선택된 픽셀
+              </h4>
+              {selectedPixel ? (
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ margin: '5px 0', fontSize: '13px', color: '#555' }}>
+                    <strong>좌표:</strong> ({selectedPixel.x}, {selectedPixel.y})
+                  </p>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    marginTop: '8px'
+                  }}>
+                    <div style={{
+                      width: '40px',
+                      height: '40px',
+                      backgroundColor: selectedPixel.color,
+                      border: '2px solid #333',
+                      borderRadius: '5px'
+                    }} />
+                    <span style={{
+                      fontSize: '13px',
+                      fontWeight: 'bold',
+                      fontFamily: 'monospace',
+                      color: '#2c3e50'
+                    }}>
+                      {selectedPixel.color.toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Color Picker */}
+                  <div style={{
+                    marginTop: '15px',
+                    padding: '10px',
+                    backgroundColor: '#fef5e7',
+                    borderRadius: '8px',
+                    border: '2px solid #f39c12'
+                  }}>
+                    <label style={{
+                      display: 'block',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                      color: '#2c3e50',
+                      marginBottom: '8px'
+                    }}>
+                      🎨 색상 변경
+                    </label>
+                    <input
+                      type="color"
+                      value={selectedPixel.color}
+                      onChange={(e) => changePixelColor(e.target.value)}
+                      style={{
+                        width: '100%',
+                        height: '40px',
+                        border: '2px solid #333',
+                        borderRadius: '5px',
+                        cursor: 'pointer'
+                      }}
+                    />
+                  </div>
+
+                  {/* Quick Color Buttons */}
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '10px',
+                    backgroundColor: '#e8f5e9',
+                    borderRadius: '8px',
+                    border: '2px solid #4CAF50'
+                  }}>
+                    <label style={{
+                      display: 'block',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      color: '#2c3e50',
+                      marginBottom: '8px',
+                      textAlign: 'center'
+                    }}>
+                      ⚡ 빠른 색상 선택
+                    </label>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(6, 1fr)',
+                      gap: '5px'
+                    }}>
+                      {colors.map((color, index) => (
+                        <button
+                          key={index}
+                          onClick={() => changePixelColor(color)}
+                          style={{
+                            width: '35px',
+                            height: '35px',
+                            backgroundColor: color,
+                            border: selectedPixel.color === color ? '3px solid #000' : '2px solid #666',
+                            borderRadius: '5px',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            boxShadow: selectedPixel.color === color ? '0 2px 8px rgba(0,0,0,0.4)' : 'none'
+                          }}
+                          title={`색상 ${index + 1}: ${color}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setSelectedPixel(null)}
+                    style={{
+                      marginTop: '10px',
+                      padding: '8px 20px',
+                      backgroundColor: '#e74c3c',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    ❌ 선택 해제
+                  </button>
+                </div>
+              ) : (
+                <p style={{ 
+                  margin: 0, 
+                  fontSize: '13px', 
+                  color: '#999', 
+                  textAlign: 'center' 
+                }}>
+                  픽셀을 클릭해보세요
+                </p>
+              )}
             </div>
           </div>
         </div>
