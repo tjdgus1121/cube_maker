@@ -334,7 +334,7 @@ const CubePatternGenerator = () => {
       justifyContent: 'center'
     }}>
       <div style={{
-        maxWidth: '1200px',
+        maxWidth: '1500px',
         margin: '0 auto'
       }}>
       {/* Header */}
@@ -846,7 +846,7 @@ const CubePatternGenerator = () => {
               color: '#2c3e50',
               fontSize: '14px'
             }}>
-              2️⃣ 정확한 크기 입력
+              3️⃣ 정확한 크기 입력
             </label>
             
             <div style={{ 
